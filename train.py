@@ -9,7 +9,6 @@ from sklearn.preprocessing import MinMaxScaler
 
 from lstm import LSTMModel
 
-# tweak here before reaching for more CLI
 TICKER = "AAPL"
 HIDDEN = 64
 SEQ_LEN = 30
@@ -50,7 +49,8 @@ def inverse_matrix(scaler, arr):
 def rmse_mape(pred, actual):
     diff = pred - actual
     rmse = float(np.sqrt(np.mean(diff**2)))
-    mape = float(np.mean(np.abs(diff / actual)) * 100.0)
+    denom = np.maximum(actual, 1e-8)
+    mape = float(np.mean(np.abs(diff / denom)) * 100.0)
     return rmse, mape
 
 
@@ -138,7 +138,6 @@ def main():
         seq_len=SEQ_LEN,
         best_epoch=best_epoch,
         best_test_rmse=best_rmse,
-        ticker=np.array(TICKER),
     )
 
     row = {
