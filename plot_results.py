@@ -11,11 +11,11 @@ def per_step_rmse(pred, tgt):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("exp_id")
-    ap.add_argument("--out_dir", default="outputs")
-    ap.add_argument("--plot_dir", default="plots")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("exp_id")
+    parser.add_argument("--out_dir", default="outputs")
+    parser.add_argument("--plot_dir", default="plots")
+    args = parser.parse_args()
 
     os.makedirs(args.plot_dir, exist_ok=True)
 
@@ -32,8 +32,10 @@ def main():
         raise ValueError(f"Shape mismatch pred {pred.shape} vs tgt {tgt.shape}")
 
     horizon = pred.shape[1]
-    if os.path.isfile(meta_path) and int(np.load(meta_path)["horizon"]) != horizon:
-        raise ValueError("meta horizon does not match prediction width")
+    if os.path.isfile(meta_path):
+        meta = np.load(meta_path, allow_pickle=True)
+        if int(meta["horizon"]) != horizon:
+            raise ValueError("meta horizon does not match prediction width")
 
     steps = np.arange(1, horizon + 1)
 
