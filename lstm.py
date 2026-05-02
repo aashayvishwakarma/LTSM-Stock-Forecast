@@ -16,17 +16,6 @@ def tanh_deriv(x):
     return 1.0 - t ** 2
 
 
-def _adam(param, grad, st, lr):
-    g = np.clip(grad, -5.0, 5.0)
-    st["t"] += 1
-    t = st["t"]
-    st["m"] = 0.9 * st["m"] + 0.1 * g
-    st["v"] = 0.999 * st["v"] + 0.001 * (g ** 2)
-    m_hat = st["m"] / (1.0 - 0.9**t)
-    v_hat = st["v"] / (1.0 - 0.999**t)
-    param -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
-
-
 class LSTMCell:
     def __init__(self, input_size, hidden_size, seed=None):
         rng = np.random.default_rng(seed)
@@ -38,8 +27,8 @@ class LSTMCell:
         self.b = np.zeros((4 * self.H, 1), dtype=np.float64)
         self.dW = np.zeros_like(self.W)
         self.db = np.zeros_like(self.b)
-        self._aw = {"m": np.zeros_like(self.W), "v": np.zeros_like(self.W), "t": 0}
-        self._ab = {"m": np.zeros_like(self.b), "v": np.zeros_like(self.b), "t": 0}
+        self._adam_w = [np.zeros_like(self.W), np.zeros_like(self.W), 0]
+        self._adam_b = [np.zeros_like(self.b), np.zeros_like(self.b), 0]
 
     def zero_grad(self):
         self.dW.fill(0.0)
@@ -107,8 +96,18 @@ class LSTMCell:
         return dz[0:H], dc_prev
 
     def update(self, lr):
-        _adam(self.W, self.dW, self._aw, lr)
-        _adam(self.b, self.db, self._ab, lr)
+        for P, G, slot in (
+            (self.W, self.dW, self._adam_w),
+            (self.b, self.db, self._adam_b),
+        ):
+            g = np.clip(G, -5.0, 5.0)
+            slot[2] += 1
+            t = slot[2]
+            slot[0][:] = 0.9 * slot[0] + 0.1 * g
+            slot[1][:] = 0.999 * slot[1] + 0.001 * (g ** 2)
+            m_hat = slot[0] / (1.0 - 0.9**t)
+            v_hat = slot[1] / (1.0 - 0.999**t)
+            P -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
 
 
 class LinearLayer:
@@ -119,8 +118,12 @@ class LinearLayer:
         self.b = np.zeros((out_features, 1), dtype=np.float64)
         self.dW = np.zeros_like(self.W)
         self.db = np.zeros_like(self.b)
-        self._aw = {"m": np.zeros_like(self.W), "v": np.zeros_like(self.W), "t": 0}
-        self._ab = {"m": np.zeros_like(self.b), "v": np.zeros_like(self.b), "t": 0}
+        self._mw = np.zeros_like(self.W)
+        self._vw = np.zeros_like(self.W)
+        self._tw = 0
+        self._mb = np.zeros_like(self.b)
+        self._vb = np.zeros_like(self.b)
+        self._tb = 0
 
     def zero_grad(self):
         self.dW.fill(0.0)
@@ -137,8 +140,21 @@ class LinearLayer:
         return np.dot(self.W.T, dy)
 
     def update(self, lr):
-        _adam(self.W, self.dW, self._aw, lr)
-        _adam(self.b, self.db, self._ab, lr)
+        g = np.clip(self.dW, -5.0, 5.0)
+        self._tw += 1
+        self._mw[:] = 0.9 * self._mw + 0.1 * g
+        self._vw[:] = 0.999 * self._vw + 0.001 * (g ** 2)
+        m_hat = self._mw / (1.0 - 0.9**self._tw)
+        v_hat = self._vw / (1.0 - 0.999**self._tw)
+        self.W -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
+
+        g = np.clip(self.db, -5.0, 5.0)
+        self._tb += 1
+        self._mb[:] = 0.9 * self._mb + 0.1 * g
+        self._vb[:] = 0.999 * self._vb + 0.001 * (g ** 2)
+        m_hat = self._mb / (1.0 - 0.9**self._tb)
+        v_hat = self._vb / (1.0 - 0.999**self._tb)
+        self.b -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
 
 
 class LSTMModel:
