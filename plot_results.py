@@ -1,9 +1,3 @@
-"""
-Load saved NumPy predictions/targets and produce evaluation plots.
-"""
-
-from __future__ import annotations
-
 import argparse
 import os
 
@@ -11,22 +5,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Plot LSTM forecast artifacts")
-    p.add_argument("--exp_id", type=str, required=True)
-    p.add_argument("--out_dir", type=str, default="outputs")
-    p.add_argument("--plot_dir", type=str, default="plots")
-    return p.parse_args()
+def per_step_rmse(pred, tgt):
+    d = pred - tgt
+    return np.sqrt(np.mean(d**2, axis=0))
 
 
-def per_step_rmse(pred: np.ndarray, tgt: np.ndarray) -> np.ndarray:
-    """pred, tgt: (n_samples, horizon)"""
-    diff = pred - tgt
-    return np.sqrt(np.mean(diff**2, axis=0))
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("exp_id")
+    ap.add_argument("--out_dir", default="outputs")
+    ap.add_argument("--plot_dir", default="plots")
+    args = ap.parse_args()
 
-
-def main() -> None:
-    args = parse_args()
     os.makedirs(args.plot_dir, exist_ok=True)
 
     pred_path = os.path.join(args.out_dir, f"{args.exp_id}_predictions.npy")
@@ -42,14 +32,11 @@ def main() -> None:
         raise ValueError(f"Shape mismatch pred {pred.shape} vs tgt {tgt.shape}")
 
     horizon = pred.shape[1]
-    if os.path.isfile(meta_path):
-        meta = np.load(meta_path, allow_pickle=True)
-        if int(meta["horizon"]) != horizon:
-            raise ValueError("meta horizon does not match prediction width")
+    if os.path.isfile(meta_path) and int(np.load(meta_path)["horizon"]) != horizon:
+        raise ValueError("meta horizon does not match prediction width")
 
     steps = np.arange(1, horizon + 1)
 
-    # Plot 1: t+1 (column 0) actual vs predicted across test windows
     fig1, ax1 = plt.subplots(figsize=(10, 4))
     ax1.plot(tgt[:, 0], label="Actual (t+1)", color="tab:blue", alpha=0.85)
     ax1.plot(pred[:, 0], label="Predicted (t+1)", color="tab:orange", alpha=0.85)
@@ -63,7 +50,6 @@ def main() -> None:
     fig1.savefig(p1, dpi=150)
     plt.close(fig1)
 
-    # Plot 2: RMSE per forecast step
     rmse_steps = per_step_rmse(pred, tgt)
     fig2, ax2 = plt.subplots(figsize=(8, 4))
     ax2.bar(steps, rmse_steps, color="tab:green", alpha=0.85)
@@ -77,7 +63,6 @@ def main() -> None:
     fig2.savefig(p2, dpi=150)
     plt.close(fig2)
 
-    # Plot 3: one sample — multi-step forecast vs actual
     sample_idx = pred.shape[0] // 2
     fig3, ax3 = plt.subplots(figsize=(8, 4))
     ax3.plot(steps, tgt[sample_idx], marker="o", label="Actual", color="tab:blue")

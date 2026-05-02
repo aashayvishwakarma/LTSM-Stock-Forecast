@@ -12,19 +12,14 @@ Optional: use a virtual environment before installing.
 
 ## Train
 
-Default data: **AAPL** adjusted close from **2015-01-01** through **2024** (`--end 2025-01-01`). The train/test split is **chronological** (no temporal leakage). Each epoch shuffles **training windows only**.
+Hyperparameters (`TICKER`, `HIDDEN`, `SEQ_LEN`, `HORIZON`, `EPOCHS`, `LR`, `SPLIT`, dates, etc.) live at the **top of `train.py`** — edit there first.
+
+Default data: **AAPL** adjusted close **2015-01-01** through **2024** (`END = "2025-01-01"`). Train/test split is **chronological**; each epoch shuffles **training windows only**.
+
+CLI is minimal: pick a run label and optional log path.
 
 ```bash
-python train.py \
-  --ticker AAPL \
-  --hidden 64 \
-  --seq_len 30 \
-  --horizon 5 \
-  --epochs 100 \
-  --lr 0.001 \
-  --split 0.8 \
-  --exp_id run_aapl_baseline \
-  --log experiment_log.csv
+python train.py --exp_id run_aapl_baseline --log experiment_log.csv
 ```
 
 Artifacts:
@@ -32,15 +27,17 @@ Artifacts:
 - `outputs/{exp_id}_predictions.npy` — test predictions (original price scale)
 - `outputs/{exp_id}_targets.npy` — matching test targets
 - `outputs/{exp_id}_meta.npz` — horizon, seq_len, best epoch, etc.
-- Appends one row per run to `experiment_log.csv` (path configurable with `--log`)
+- Appends one row per run to the CSV (`--log`, default `experiment_log.csv`)
 
 ## Plot
 
-After training, generate PNGs from saved arrays:
+After training:
 
 ```bash
-python plot_results.py --exp_id run_aapl_baseline --out_dir outputs --plot_dir plots
+python plot_results.py run_aapl_baseline --out_dir outputs --plot_dir plots
 ```
+
+`exp_id` is a **positional** argument (the label you passed to `--exp_id` when training).
 
 Outputs:
 
@@ -61,12 +58,12 @@ Outputs:
 | 7 | TSLA | 64 | 30 | 5 | 0.001 | Different ticker, same architecture |
 | 8 | TSLA | 128 | 60 | 10 | 0.001 | Heavier model on volatile name |
 
-Example commands:
+Match each table row by editing the constants in `train.py`, then:
 
 ```bash
-python train.py --ticker AAPL --hidden 32 --seq_len 10 --horizon 5 --lr 0.001 --exp_id e01 --epochs 150
-python train.py --ticker TSLA --hidden 128 --seq_len 60 --horizon 10 --lr 0.001 --exp_id e08 --epochs 150
-python plot_results.py --exp_id e01
+python train.py --exp_id e01
+python train.py --exp_id e08
+python plot_results.py e01
 ```
 
 ## Metrics
