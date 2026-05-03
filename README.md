@@ -5,10 +5,10 @@ Single-layer LSTM with manual forward/BPTT, Adam updates, and gradient clipping,
 ## Setup
 
 ```bash
-pip install numpy yfinance scikit-learn matplotlib
+python3 -m pip install numpy yfinance scikit-learn matplotlib
 ```
 
-Optional: use a virtual environment before installing.
+If `pip` alone fails with “command not found”, use the form above (macOS often doesn’t put `pip` on `PATH`). Optional: create a venv first, then run the same command inside it.
 
 ## Train
 
@@ -16,11 +16,22 @@ Hyperparameters (`TICKER`, `HIDDEN`, `SEQ_LEN`, `HORIZON`, `EPOCHS`, `LR`, `SPLI
 
 Default data: **AAPL** adjusted close **2015-01-01** through **2024** (`END = "2025-01-01"`). Train/test split is **chronological**; each epoch shuffles **training windows only**.
 
-CLI is minimal: pick a run label and optional log path.
+CLI: run label (`--exp_id`), optional log path, optional **`--ticker`** (otherwise uses `TICKER` at top of `train.py`).
 
 ```bash
-python train.py --exp_id run_aapl_baseline --log experiment_log.csv
+python3 train.py --exp_id run_aapl_baseline --log experiment_log.csv
+python3 train.py --ticker TSLA --exp_id tsla_001
 ```
+
+Same hyperparameters apply to every ticker unless you edit them in `train.py`. Run separate jobs per symbol with distinct `--exp_id` so `outputs/` files don’t overwrite:
+
+```bash
+python3 train.py --ticker TSLA --exp_id tsla_001
+python3 train.py --ticker TWLO --exp_id twlo_001
+python3 train.py --ticker SOFI --exp_id sofi_001
+```
+
+Then plot each run, e.g. `python3 plot_results.py tsla_001`.
 
 Artifacts:
 
@@ -34,7 +45,7 @@ Artifacts:
 After training:
 
 ```bash
-python plot_results.py run_aapl_baseline --out_dir outputs --plot_dir plots
+python3 plot_results.py run_aapl_baseline --out_dir outputs --plot_dir plots
 ```
 
 `exp_id` is a **positional** argument (the label you passed to `--exp_id` when training).
@@ -61,9 +72,9 @@ Outputs:
 Match each table row by editing the constants in `train.py`, then:
 
 ```bash
-python train.py --exp_id e01
-python train.py --exp_id e08
-python plot_results.py e01
+python3 train.py --exp_id e01
+python3 train.py --exp_id e08
+python3 plot_results.py e01
 ```
 
 ## Metrics

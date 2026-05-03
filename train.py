@@ -72,11 +72,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp_id", default="default")
     ap.add_argument("--log", default="experiment_log.csv")
+    ap.add_argument("--ticker", default=None, help="override TICKER in this file")
     args = ap.parse_args()
+
+    ticker = args.ticker or TICKER
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    close = fetch_close_prices(TICKER, START, END)
+    close = fetch_close_prices(ticker, START, END)
     n = len(close)
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(close)
@@ -143,7 +146,7 @@ def main():
     row = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "exp_id": args.exp_id,
-        "ticker": TICKER,
+        "ticker": ticker,
         "hidden": HIDDEN,
         "seq_len": SEQ_LEN,
         "horizon": HORIZON,
