@@ -1,3 +1,4 @@
 timestamp,exp_id,ticker,hidden,seq_len,horizon,epochs,lr,split,seed,train_loss_final,test_rmse_final,test_mape_final,test_rmse_best,best_epoch,pred_path,tgt_path
 2026-05-02T08:03:25.574930+00:00,run_aapl_baseline,AAPL,64,30,5,100,0.001,0.8,42,0.00015806147177399712,7.19611745339656,2.623831441013754,5.298906688172921,11,outputs/run_aapl_baseline_predictions.npy,outputs/run_aapl_baseline_targets.npy
 2026-05-03T20:34:21.210169+00:00,tsla_001,TSLA,64,30,5,100,0.001,0.8,42,0.0003733082473309795,18.123164363105804,4.984815503451475,15.563974070024534,32,outputs/tsla_001_predictions.npy,outputs/tsla_001_targets.npy
+2026-05-03T20:39:45.624120+00:00,twlo_001,TWLO,64,30,5,100,0.001,0.8,42,0.0006935498323469638,3.031581619738278,3.0811710011252895,3.021552704758479,58,outputs/twlo_001_predictions.npy,outputs/twlo_001_targets.npy
