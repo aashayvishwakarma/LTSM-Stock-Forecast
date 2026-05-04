@@ -1,17 +1,28 @@
 import numpy as np
 
+# Adam hyperparameters
+adam_b1 = 0.9 # decay rate for first moment
+adam_b2 = 0.999 # decay rate for second moment
+adam_eps = 1e-8 # epsilon to prevent division by zero
 
+# Gradient clipping value
+grad_clip = 5.0 # max absolute value of gradient clipping value
+
+
+# Activation functions
+
+# Sigmoid activation function
 def sigmoid(x):
     x = np.clip(x, -500, 500)
-    return 1.0 / (1.0 + np.exp(-x))
+    return 1.0 / [1.0 + np.exp(-x)]
 
-
-def sigmoid_deriv(x):
+# Sigmoid derivative function
+def sigmoid_derivative(x):
     s = sigmoid(x)
     return s * (1.0 - s)
 
-
-def tanh_deriv(x):
+# Tanh derivative function
+def tanh_derivative(x):
     t = np.tanh(x)
     return 1.0 - t ** 2
 
@@ -21,31 +32,55 @@ class LSTMCell:
         rng = np.random.default_rng(seed)
         self.H = hidden_size
         self.I = input_size
+
+        # Xavier initialization for weights
         fan = self.H + self.I
         lim = 0.5 * np.sqrt(6.0 / (fan + 4 * self.H))
+
+        # All 4 gate weights stacked into one matrix (4H x H+I) for efficiency
+        # Row order: input gate, forget gate, cell gate, output gate
         self.W = rng.uniform(-lim, lim, size=(4 * self.H, fan)).astype(np.float64)
         self.b = np.zeros((4 * self.H, 1), dtype=np.float64)
+
+        # Gradients for backpropagation
         self.dW = np.zeros_like(self.W)
         self.db = np.zeros_like(self.b)
-        self._adam_w = [np.zeros_like(self.W), np.zeros_like(self.W), 0]
-        self._adam_b = [np.zeros_like(self.b), np.zeros_like(self.b), 0]
+
+        # Adam state: [moment, variance, time]
+        self.adam_w = [np.zeros_like(self.W), np.zeros_like(self.W), 0]
+        self.adam_b = [np.zeros_like(self.b), np.zeros_like(self.b), 0]
 
     def zero_grad(self):
+        # Reset gradients to zero
         self.dW.fill(0.0)
         self.db.fill(0.0)
 
     def forward(self, x, h_prev, c_prev):
+        # One LSTM timestep forward
+
+        # Concatenate h_prev and x to single input vector (H+I, 1)
         z = np.vstack([h_prev, x])
+
+        # Compute affine transformation (4H x 1) = (4H x H+I) * (H+I x 1) + (4H x 1)
         a = np.dot(self.W, z) + self.b
         H = self.H
+
+        # Split into 4 gates (H x 1) each
         ai, af, ag, ao = a[0:H], a[H : 2 * H], a[2 * H : 3 * H], a[3 * H : 4 * H]
+
         i_gate = sigmoid(ai)
         f_gate = sigmoid(af)
         c_tilde = np.tanh(ag)
         o_gate = sigmoid(ao)
+        
+        # Update cell state
         c = f_gate * c_prev + i_gate * c_tilde
+        
+        # Hidden state activation
         tanh_c = np.tanh(c)
         h = o_gate * tanh_c
+
+
         cache = {
             "z": z,
             "i_gate": i_gate,
@@ -63,6 +98,8 @@ class LSTMCell:
         return h, c, cache
 
     def backward(self, cache, dh_up, dc_up):
+        # One LSTM timestep backward
+
         H = self.H
         i_gate = cache["i_gate"]
         f_gate = cache["f_gate"]
@@ -74,43 +111,55 @@ class LSTMCell:
         z = cache["z"]
         ai, af, ag, ao = cache["ai"], cache["af"], cache["ag"], cache["ao"]
 
+        # Backpropagate through output gate
         do = dh_up * tanh_c
         d_tanh_c = dh_up * o_gate
-        dc = dc_up + d_tanh_c * tanh_deriv(c)
+        dc = dc_up + d_tanh_c * tanh_derivative(c)
+
+        # Backpropagate through forget gate
         df = dc * c_prev
         di = dc * c_tilde
         dc_tilde = dc * i_gate
         dc_prev = dc * f_gate
 
+        # Chain rule through all gates
         da = np.vstack(
             [
-                di * sigmoid_deriv(ai),
-                df * sigmoid_deriv(af),
-                dc_tilde * tanh_deriv(ag),
-                do * sigmoid_deriv(ao),
+                di * sigmoid_derivative(ai),
+                df * sigmoid_derivative(af),
+                dc_tilde * tanh_derivative(ag),
+                do * sigmoid_derivative(ao),
             ]
         )
+
+        # Accumulate gradients for all weights
         self.dW += np.dot(da, z.T)
         self.db += da
+
+        # Backpropagate through input vector
         dz = np.dot(self.W.T, da)
         return dz[0:H], dc_prev
 
     def update(self, lr):
+        # Update weights using Adam optimizer
         for P, G, slot in (
-            (self.W, self.dW, self._adam_w),
-            (self.b, self.db, self._adam_b),
+            (self.W, self.dW, self.adam_w),
+            (self.b, self.db, self.adam_b),
         ):
-            g = np.clip(G, -5.0, 5.0)
+            g = np.clip(G, -grad_clip, grad_clip)
             slot[2] += 1
             t = slot[2]
-            slot[0][:] = 0.9 * slot[0] + 0.1 * g
-            slot[1][:] = 0.999 * slot[1] + 0.001 * (g ** 2)
-            m_hat = slot[0] / (1.0 - 0.9**t)
-            v_hat = slot[1] / (1.0 - 0.999**t)
-            P -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
+            slot[0][:] = adam_b1 * slot[0] + (1.0 - adam_b1) * g
+            slot[1][:] = adam_b2 * slot[1] + (1.0 - adam_b2) * (g ** 2)
+
+            # Bias correction for first and second moments
+            m_hat = slot[0] / (1.0 - adam_b1**t)
+            v_hat = slot[1] / (1.0 - adam_b2**t)
+            P -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
 
 
 class LinearLayer:
+
     def __init__(self, in_features, out_features, seed=None):
         rng = np.random.default_rng(seed)
         lim = 0.5 * np.sqrt(6.0 / (in_features + out_features))
@@ -118,6 +167,8 @@ class LinearLayer:
         self.b = np.zeros((out_features, 1), dtype=np.float64)
         self.dW = np.zeros_like(self.W)
         self.db = np.zeros_like(self.b)
+
+        # Seperate Adam state for weights and biases
         self._mw = np.zeros_like(self.W)
         self._vw = np.zeros_like(self.W)
         self._tw = 0
@@ -126,35 +177,40 @@ class LinearLayer:
         self._tb = 0
 
     def zero_grad(self):
+        # Reset gradients to zero
         self.dW.fill(0.0)
         self.db.fill(0.0)
 
     def forward(self, x):
+        # One linear layer forward
         y = np.dot(self.W, x) + self.b
         return y, {"x": x}
 
     def backward(self, cache, dy):
+        # One linear layer backward
         x = cache["x"]
         self.dW += np.dot(dy, x.T)
         self.db += dy
         return np.dot(self.W.T, dy)
 
     def update(self, lr):
-        g = np.clip(self.dW, -5.0, 5.0)
+        # Adam update for weights
+        g = np.clip(self.dW, -grad_clip, grad_clip)
         self._tw += 1
-        self._mw[:] = 0.9 * self._mw + 0.1 * g
-        self._vw[:] = 0.999 * self._vw + 0.001 * (g ** 2)
-        m_hat = self._mw / (1.0 - 0.9**self._tw)
-        v_hat = self._vw / (1.0 - 0.999**self._tw)
-        self.W -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
+        self._mw[:] = adam_b1 * self._mw + (1.0 - adam_b1) * g
+        self._vw[:] = adam_b2 * self._vw + (1.0 - adam_b2) * (g ** 2)
+        m_hat = self._mw / (1.0 - adam_b1**self._tw)
+        v_hat = self._vw / (1.0 - adam_b2**self._tw)
+        self.W -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
 
-        g = np.clip(self.db, -5.0, 5.0)
+        # Adam update for biases
+        g = np.clip(self.db, -grad_clip, grad_clip)
         self._tb += 1
-        self._mb[:] = 0.9 * self._mb + 0.1 * g
-        self._vb[:] = 0.999 * self._vb + 0.001 * (g ** 2)
-        m_hat = self._mb / (1.0 - 0.9**self._tb)
-        v_hat = self._vb / (1.0 - 0.999**self._tb)
-        self.b -= lr * m_hat / (np.sqrt(v_hat) + 1e-8)
+        self._mb[:] = adam_b1 * self._mb + (1.0 - adam_b1) * g
+        self._vb[:] = adam_b2 * self._vb + (1.0 - adam_b2) * (g ** 2)
+        m_hat = self._mb / (1.0 - adam_b1**self._tb)
+        v_hat = self._vb / (1.0 - adam_b2**self._tb)
+        self.b -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
 
 
 class LSTMModel:
@@ -164,29 +220,45 @@ class LSTMModel:
         self.head = LinearLayer(hidden_size, horizon, seed=seed)
 
     def forward(self, inputs):
+        # One LSTM forward pass - Model level cache for backpropagation
+
+        # Initialize hidden and cell states
         h = np.zeros((self.hidden_size, 1))
         c = np.zeros((self.hidden_size, 1))
+
+        # Forward pass through LSTM cell for each input
         caches_seq = []
         for x in inputs:
             h, c, cache = self.cell.forward(x, h, c)
             caches_seq.append(cache)
+
+        # Project hidden state to output space
+        # This is the final output of the LSTM model
         y, lin_cache = self.head.forward(h)
+
         return y, {"seq": caches_seq, "linear": lin_cache}
 
     def backward(self, pred, target, caches):
-        err = pred - target
-        n = pred.size
-        loss = float(np.mean(err ** 2))
-        dy = (2.0 / n) * err
+        # One LSTM backward pass - Model level cache for backpropagation
+        residual = pred - target
+        n = residual.size
+        loss = float(np.mean(residual ** 2))
+        dy = (2.0 / n) * residual
 
         self.cell.zero_grad()
         self.head.zero_grad()
+
+        # Backpropagate through linear layer
         dh = self.head.backward(caches["linear"], dy)
         dc = np.zeros((self.hidden_size, 1))
-        for t in reversed(range(len(caches["seq"]))):
-            dh, dc = self.cell.backward(caches["seq"][t], dh, dc)
+        seq = caches["seq"]
+
+        # Backpropagate through LSTM cell for each input
+        for t in reversed(range(len(seq))):
+            dh, dc = self.cell.backward(seq[t], dh, dc)
         return loss
 
     def apply_updates(self, lr):
+        # Apply updates to LSTM cell and linear layer
         self.cell.update(lr)
         self.head.update(lr)

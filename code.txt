@@ -1,0 +1,593 @@
+import numpy as np
+
+# Adam hyperparameters
+adam_b1 = 0.9 # decay rate for first moment
+adam_b2 = 0.999 # decay rate for second moment
+adam_eps = 1e-8 # epsilon to prevent division by zero
+
+# Gradient clipping value
+grad_clip = 5.0 # max absolute value of gradient clipping value
+
+
+# Activation functions
+
+# Sigmoid activation function
+def sigmoid(x):
+    x = np.clip(x, -500, 500)
+    return 1.0 / [1.0 + np.exp(-x)]
+
+# Sigmoid derivative function
+def sigmoid_derivative(x):
+    s = sigmoid(x)
+    return s * (1.0 - s)
+
+# Tanh derivative function
+def tanh_derivative(x):
+    t = np.tanh(x)
+    return 1.0 - t ** 2
+
+
+class LSTMCell:
+    def __init__(self, input_size, hidden_size, seed=None):
+        rng = np.random.default_rng(seed)
+        self.H = hidden_size
+        self.I = input_size
+
+        # Xavier initialization for weights
+        fan = self.H + self.I
+        lim = 0.5 * np.sqrt(6.0 / (fan + 4 * self.H))
+
+        # All 4 gate weights stacked into one matrix (4H x H+I) for efficiency
+        # Row order: input gate, forget gate, cell gate, output gate
+        self.W = rng.uniform(-lim, lim, size=(4 * self.H, fan)).astype(np.float64)
+        self.b = np.zeros((4 * self.H, 1), dtype=np.float64)
+
+        # Gradients for backpropagation
+        self.dW = np.zeros_like(self.W)
+        self.db = np.zeros_like(self.b)
+
+        # Adam state: [moment, variance, time]
+        self.adam_w = [np.zeros_like(self.W), np.zeros_like(self.W), 0]
+        self.adam_b = [np.zeros_like(self.b), np.zeros_like(self.b), 0]
+
+    def zero_grad(self):
+        # Reset gradients to zero
+        self.dW.fill(0.0)
+        self.db.fill(0.0)
+
+    def forward(self, x, h_prev, c_prev):
+        # One LSTM timestep forward
+
+        # Concatenate h_prev and x to single input vector (H+I, 1)
+        z = np.vstack([h_prev, x])
+
+        # Compute affine transformation (4H x 1) = (4H x H+I) * (H+I x 1) + (4H x 1)
+        a = np.dot(self.W, z) + self.b
+        H = self.H
+
+        # Split into 4 gates (H x 1) each
+        ai, af, ag, ao = a[0:H], a[H : 2 * H], a[2 * H : 3 * H], a[3 * H : 4 * H]
+
+        i_gate = sigmoid(ai)
+        f_gate = sigmoid(af)
+        c_tilde = np.tanh(ag)
+        o_gate = sigmoid(ao)
+        
+        # Update cell state
+        c = f_gate * c_prev + i_gate * c_tilde
+        
+        # Hidden state activation
+        tanh_c = np.tanh(c)
+        h = o_gate * tanh_c
+
+
+        cache = {
+            "z": z,
+            "i_gate": i_gate,
+            "f_gate": f_gate,
+            "c_tilde": c_tilde,
+            "o_gate": o_gate,
+            "c": c,
+            "tanh_c": tanh_c,
+            "c_prev": c_prev,
+            "ai": ai,
+            "af": af,
+            "ag": ag,
+            "ao": ao,
+        }
+        return h, c, cache
+
+    def backward(self, cache, dh_up, dc_up):
+        # One LSTM timestep backward
+
+        H = self.H
+        i_gate = cache["i_gate"]
+        f_gate = cache["f_gate"]
+        c_tilde = cache["c_tilde"]
+        o_gate = cache["o_gate"]
+        c = cache["c"]
+        tanh_c = cache["tanh_c"]
+        c_prev = cache["c_prev"]
+        z = cache["z"]
+        ai, af, ag, ao = cache["ai"], cache["af"], cache["ag"], cache["ao"]
+
+        # Backpropagate through output gate
+        do = dh_up * tanh_c
+        d_tanh_c = dh_up * o_gate
+        dc = dc_up + d_tanh_c * tanh_derivative(c)
+
+        # Backpropagate through forget gate
+        df = dc * c_prev
+        di = dc * c_tilde
+        dc_tilde = dc * i_gate
+        dc_prev = dc * f_gate
+
+        # Chain rule through all gates
+        da = np.vstack(
+            [
+                di * sigmoid_derivative(ai),
+                df * sigmoid_derivative(af),
+                dc_tilde * tanh_derivative(ag),
+                do * sigmoid_derivative(ao),
+            ]
+        )
+
+        # Accumulate gradients for all weights
+        self.dW += np.dot(da, z.T)
+        self.db += da
+
+        # Backpropagate through input vector
+        dz = np.dot(self.W.T, da)
+        return dz[0:H], dc_prev
+
+    def update(self, lr):
+        # Update weights using Adam optimizer
+        for P, G, slot in (
+            (self.W, self.dW, self.adam_w),
+            (self.b, self.db, self.adam_b),
+        ):
+            g = np.clip(G, -grad_clip, grad_clip)
+            slot[2] += 1
+            t = slot[2]
+            slot[0][:] = adam_b1 * slot[0] + (1.0 - adam_b1) * g
+            slot[1][:] = adam_b2 * slot[1] + (1.0 - adam_b2) * (g ** 2)
+
+            # Bias correction for first and second moments
+            m_hat = slot[0] / (1.0 - adam_b1**t)
+            v_hat = slot[1] / (1.0 - adam_b2**t)
+            P -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
+
+
+class LinearLayer:
+
+    def __init__(self, in_features, out_features, seed=None):
+        rng = np.random.default_rng(seed)
+        lim = 0.5 * np.sqrt(6.0 / (in_features + out_features))
+        self.W = rng.uniform(-lim, lim, size=(out_features, in_features)).astype(np.float64)
+        self.b = np.zeros((out_features, 1), dtype=np.float64)
+        self.dW = np.zeros_like(self.W)
+        self.db = np.zeros_like(self.b)
+
+        # Seperate Adam state for weights and biases
+        self._mw = np.zeros_like(self.W)
+        self._vw = np.zeros_like(self.W)
+        self._tw = 0
+        self._mb = np.zeros_like(self.b)
+        self._vb = np.zeros_like(self.b)
+        self._tb = 0
+
+    def zero_grad(self):
+        # Reset gradients to zero
+        self.dW.fill(0.0)
+        self.db.fill(0.0)
+
+    def forward(self, x):
+        # One linear layer forward
+        y = np.dot(self.W, x) + self.b
+        return y, {"x": x}
+
+    def backward(self, cache, dy):
+        # One linear layer backward
+        x = cache["x"]
+        self.dW += np.dot(dy, x.T)
+        self.db += dy
+        return np.dot(self.W.T, dy)
+
+    def update(self, lr):
+        # Adam update for weights
+        g = np.clip(self.dW, -grad_clip, grad_clip)
+        self._tw += 1
+        self._mw[:] = adam_b1 * self._mw + (1.0 - adam_b1) * g
+        self._vw[:] = adam_b2 * self._vw + (1.0 - adam_b2) * (g ** 2)
+        m_hat = self._mw / (1.0 - adam_b1**self._tw)
+        v_hat = self._vw / (1.0 - adam_b2**self._tw)
+        self.W -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
+
+        # Adam update for biases
+        g = np.clip(self.db, -grad_clip, grad_clip)
+        self._tb += 1
+        self._mb[:] = adam_b1 * self._mb + (1.0 - adam_b1) * g
+        self._vb[:] = adam_b2 * self._vb + (1.0 - adam_b2) * (g ** 2)
+        m_hat = self._mb / (1.0 - adam_b1**self._tb)
+        v_hat = self._vb / (1.0 - adam_b2**self._tb)
+        self.b -= lr * m_hat / (np.sqrt(v_hat) + adam_eps)
+
+
+class LSTMModel:
+    def __init__(self, input_size, hidden_size, horizon, seed=None):
+        self.hidden_size = hidden_size
+        self.cell = LSTMCell(input_size, hidden_size, seed=seed)
+        self.head = LinearLayer(hidden_size, horizon, seed=seed)
+
+    def forward(self, inputs):
+        # One LSTM forward pass - Model level cache for backpropagation
+
+        # Initialize hidden and cell states
+        h = np.zeros((self.hidden_size, 1))
+        c = np.zeros((self.hidden_size, 1))
+
+        # Forward pass through LSTM cell for each input
+        caches_seq = []
+        for x in inputs:
+            h, c, cache = self.cell.forward(x, h, c)
+            caches_seq.append(cache)
+
+        # Project hidden state to output space
+        # This is the final output of the LSTM model
+        y, lin_cache = self.head.forward(h)
+
+        return y, {"seq": caches_seq, "linear": lin_cache}
+
+    def backward(self, pred, target, caches):
+        # One LSTM backward pass - Model level cache for backpropagation
+        residual = pred - target
+        n = residual.size
+        loss = float(np.mean(residual ** 2))
+        dy = (2.0 / n) * residual
+
+        self.cell.zero_grad()
+        self.head.zero_grad()
+
+        # Backpropagate through linear layer
+        dh = self.head.backward(caches["linear"], dy)
+        dc = np.zeros((self.hidden_size, 1))
+        seq = caches["seq"]
+
+        # Backpropagate through LSTM cell for each input
+        for t in reversed(range(len(seq))):
+            dh, dc = self.cell.backward(seq[t], dh, dc)
+        return loss
+
+    def apply_updates(self, lr):
+        # Apply updates to LSTM cell and linear layer
+        self.cell.update(lr)
+        self.head.update(lr)
+
+import argparse
+import csv
+import os
+from datetime import datetime, timezone
+
+import numpy as np
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+
+from lstm import LSTMModel
+
+# yFinance History Window
+START = "2015-01-01"
+END = "2025-01-01"
+TICKER = "AAPL"
+
+# Model + Training Hyperparameters
+HIDDEN = 64
+SEQ_LEN = 30
+HORIZON = 5
+EPOCHS = 100
+LR = 1e-3
+SPLIT = 0.8
+SEED = 42
+
+OUT_DIR = "outputs"
+
+
+def fetch_close_prices(ticker, start, end):
+    # Pull closing prices from yFinance
+    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+    if df.empty:
+        raise RuntimeError(f"No data returned for {ticker} ({start} to {end}).")
+    return df["Close"].to_numpy(dtype=np.float64).reshape(-1, 1)
+
+
+def build_windows(scaled, seq_len, horizon, start_idx, end_idx):
+    # Build training windows
+    xs = []
+    ys = []
+    last_i = end_idx - seq_len - horizon
+    for i in range(start_idx, last_i + 1):
+        window = [scaled[i + t : i + t + 1].copy() for t in range(seq_len)]
+        future = scaled[i + seq_len : i + seq_len + horizon].copy()
+        xs.append(window)
+        ys.append(future)
+    return xs, ys
+
+
+def unscale(scaler, arr):
+    # Bring predictions back to real dollar scale
+    # Flattens array into 2D array and then reshapes back to original shape
+    flat = arr.reshape(-1, 1)
+    back = scaler.inverse_transform(flat)
+    return back.reshape(arr.shape)
+
+
+def rmse_mape(pred, actual):
+    # Calculate RMSE and MAPE
+    # RMSE is the square root of the mean of the squared differences between the predicted and actual values
+    # MAPE is the mean of the absolute percentage errors between the predicted and actual values
+    diff = pred - actual
+    rmse = float(np.sqrt(np.mean(diff**2)))
+    denom = np.maximum(actual, 1e-8)
+    mape = float(np.mean(np.abs(diff / denom)) * 100.0)
+    return rmse, mape
+
+
+def evaluate(model, inputs_list, targets_list, scaler):
+    # Run inference on the model for each input sequence and target
+    preds = []
+    tgts = []
+    for x_seq, y in zip(inputs_list, targets_list):
+        y_hat, _ = model.forward(x_seq)
+        preds.append(y_hat.copy())
+        tgts.append(y.copy())
+
+    # Stack predictions and targets into 2D arrays
+    pred_scaled = np.stack([p.reshape(-1) for p in preds], axis=0)
+    tgt_scaled = np.stack([t.reshape(-1) for t in tgts], axis=0)
+
+    # Unscale predictions and targets back to original dollar scale
+    pred_inv = unscale(scaler, pred_scaled)
+    tgt_inv = unscale(scaler, tgt_scaled)
+    return (*rmse_mape(pred_inv, tgt_inv), pred_inv, tgt_inv)
+
+
+def main():
+
+    # Parsing and validating command line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_id", default="default")
+    parser.add_argument("--log", default="experiment_log.csv")
+    parser.add_argument("--ticker", default=None, help="override TICKER in this file")
+    args = parser.parse_args()
+
+    ticker = args.ticker or TICKER
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    # Data preparation
+    close = fetch_close_prices(ticker, START, END)
+    n = len(close)
+
+    # Fit scaler to closing prices
+    scaler = MinMaxScaler()
+    scaled = scaler.fit_transform(close)
+
+    # Split data into training and test sets
+    train_end = int(n * SPLIT)
+    train_inputs, train_targets = build_windows(scaled, SEQ_LEN, HORIZON, 0, train_end)
+    test_inputs, test_targets = build_windows(scaled, SEQ_LEN, HORIZON, train_end, n)
+
+    if not train_inputs:
+        raise RuntimeError("No training windows.")
+    if not test_inputs:
+        raise RuntimeError("No test windows.")
+
+    # Initialize LSTM model
+    model = LSTMModel(1, HIDDEN, HORIZON, seed=SEED)
+    train_indices = np.arange(len(train_inputs))
+
+    best_rmse = float("inf")
+    best_epoch = -1
+    last_train_loss = 0.0
+    last_test_rmse = 0.0
+    last_test_mape = 0.0
+
+    # Training loop
+    for epoch in range(1, EPOCHS + 1):
+        # Shuffle training indices
+        rng = np.random.default_rng(SEED + epoch)
+        rng.shuffle(train_indices)
+        losses = []
+        for idx in train_indices:
+            x_seq = train_inputs[idx]
+            y = train_targets[idx]
+
+            # Forward pass through LSTM model
+            pred, caches = model.forward(x_seq)
+
+            # Backward pass through LSTM model
+            losses.append(model.backward(pred, y, caches))
+
+            # Apply updates to LSTM model
+            model.apply_updates(LR)
+
+        last_train_loss = float(np.mean(losses))
+
+        # Evaluate model on test set every epoch
+        test_rmse, test_mape, pred_inv, tgt_inv = evaluate(model, test_inputs, test_targets, scaler)
+        last_test_rmse = test_rmse
+        last_test_mape = test_mape
+
+        # Update best model if test RMSE is lower
+        if test_rmse < best_rmse:
+            best_rmse = test_rmse
+            best_epoch = epoch
+
+        # Keep track of last predictions and targets
+        last_pred_inv = pred_inv.copy()
+        last_tgt_inv = tgt_inv.copy()
+
+        # Print progress every 10 epochs or at the end of training
+        if epoch == 1 or epoch % 10 == 0 or epoch == EPOCHS:
+            print(
+                f"epoch {epoch}/{EPOCHS}  train_loss={last_train_loss:.6f}  "
+                f"test_rmse={test_rmse:.6f}  test_mape={test_mape:.4f}%"
+            )
+
+    # Save predictions and targets
+    pred_path = os.path.join(OUT_DIR, f"{args.exp_id}_predictions.npy")
+    tgt_path = os.path.join(OUT_DIR, f"{args.exp_id}_targets.npy")
+    np.save(pred_path, last_pred_inv)
+    np.save(tgt_path, last_tgt_inv)
+
+    # Save metadata about the model
+    meta_path = os.path.join(OUT_DIR, f"{args.exp_id}_meta.npz")
+    np.savez(
+        meta_path,
+        horizon=HORIZON,
+        seq_len=SEQ_LEN,
+        best_epoch=best_epoch,
+        best_test_rmse=best_rmse,
+    )
+
+    # Save log of training run
+    # Appends one row per run to the CSV
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "exp_id": args.exp_id,
+        "ticker": ticker,
+        "hidden": HIDDEN,
+        "seq_len": SEQ_LEN,
+        "horizon": HORIZON,
+        "epochs": EPOCHS,
+        "lr": LR,
+        "split": SPLIT,
+        "seed": SEED,
+        "train_loss_final": last_train_loss,
+        "test_rmse_final": last_test_rmse,
+        "test_mape_final": last_test_mape,
+        "test_rmse_best": best_rmse,
+        "best_epoch": best_epoch,
+        "pred_path": pred_path,
+        "tgt_path": tgt_path,
+    }
+
+    log_path = args.log
+    new_file = not os.path.isfile(log_path)
+    with open(log_path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if new_file:
+            w.writeheader() # Write header if new file
+        w.writerow(row)
+
+    print(f"Saved predictions to {pred_path} and log to {log_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+import argparse
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def per_step_rmse(predictions, actuals):
+    # Calculate RMSE at each step
+    err = predictions - actuals
+    return np.sqrt(np.mean(err**2, axis=0))
+
+
+def load_arrays(exp_id, out_dir):
+    # Load predictions, targets, and metadata from files
+    # Raise error if files are missing
+    pred_path = os.path.join(out_dir, f"{exp_id}_predictions.npy")
+    tgt_path = os.path.join(out_dir, f"{exp_id}_targets.npy")
+    meta_path = os.path.join(out_dir, f"{exp_id}_meta.npz")
+    if not os.path.isfile(pred_path) or not os.path.isfile(tgt_path):
+        raise FileNotFoundError(f"Missing {pred_path} or {tgt_path}. Run train.py first.")
+    pred = np.load(pred_path)
+    tgt = np.load(tgt_path)
+    return pred, tgt, meta_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("exp_id")
+    parser.add_argument("--out_dir", default="outputs")
+    parser.add_argument("--plot_dir", default="plots")
+    args = parser.parse_args()
+
+    os.makedirs(args.plot_dir, exist_ok=True)
+
+    pred, tgt, meta_path = load_arrays(args.exp_id, args.out_dir)
+
+    # Raise error if predictions and targets have different shapes
+    if pred.shape != tgt.shape:
+        raise ValueError(f"Shape mismatch pred {pred.shape} vs tgt {tgt.shape}")
+
+    horizon = pred.shape[1]
+
+    # Load metadata if it exists
+    if os.path.isfile(meta_path):
+        meta = np.load(meta_path, allow_pickle=True)
+        if int(meta["horizon"]) != horizon:
+            raise ValueError("meta horizon does not match prediction width")
+
+    # Create array of steps from 1 to horizon
+    steps = np.arange(1, horizon + 1)
+
+    # Plot1: Actual vs Predicted Close (t+1)
+    # Only plot the first time step (t+1)
+    fig1, ax1 = plt.subplots(figsize=(10, 4))
+    ax1.plot(tgt[:, 0], label="Actual (t+1)", color="tab:blue", alpha=0.85)
+    ax1.plot(pred[:, 0], label="Predicted (t+1)", color="tab:orange", alpha=0.85)
+    ax1.set_title(f"Test set: actual vs predicted close (t+1) - {args.exp_id}")
+    ax1.set_xlabel("Test window index")
+    ax1.set_ylabel("Price")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    fig1.tight_layout()
+    p1 = os.path.join(args.plot_dir, f"{args.exp_id}_plot1_t1_series.png")
+    fig1.savefig(p1, dpi=150)
+    plt.close(fig1)
+
+    # Plot2: RMSE by forecast step
+    # Plot RMSE at each step from t+1 to t+horizon
+    rmse_steps = per_step_rmse(pred, tgt)
+    fig2, ax2 = plt.subplots(figsize=(8, 4))
+    ax2.bar(steps, rmse_steps, color="tab:green", alpha=0.85)
+    ax2.set_title(f"RMSE by forecast step - {args.exp_id}")
+    ax2.set_xlabel("Step (t+k)")
+    ax2.set_ylabel("RMSE (same units as price)")
+    ax2.set_xticks(steps)
+    ax2.grid(True, axis="y", alpha=0.3)
+    fig2.tight_layout()
+    p2 = os.path.join(args.plot_dir, f"{args.exp_id}_plot2_rmse_by_step.png")
+    fig2.savefig(p2, dpi=150)
+    plt.close(fig2)
+
+    # Plot3: Single window multi-step forecast
+    # Plot actual and predicted close for a single window
+    # Show the actual and predicted close for a single window
+    # Show the actual and predicted close for a single window
+    sample_idx = pred.shape[0] // 2
+    fig3, ax3 = plt.subplots(figsize=(8, 4))
+    ax3.plot(steps, tgt[sample_idx], marker="o", label="Actual", color="tab:blue")
+    ax3.plot(steps, pred[sample_idx], marker="o", label="Predicted", color="tab:orange")
+    ax3.set_title(f"Single window (index {sample_idx}): multi-step forecast - {args.exp_id}")
+    ax3.set_xlabel("Horizon step")
+    ax3.set_ylabel("Price")
+    ax3.set_xticks(steps)
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    fig3.tight_layout()
+    p3 = os.path.join(args.plot_dir, f"{args.exp_id}_plot3_single_window.png")
+    fig3.savefig(p3, dpi=150)
+    plt.close(fig3)
+
+    print(f"Saved plots:\n  {p1}\n  {p2}\n  {p3}")
+
+
+if __name__ == "__main__":
+    main()

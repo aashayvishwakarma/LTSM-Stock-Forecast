@@ -9,7 +9,12 @@ from sklearn.preprocessing import MinMaxScaler
 
 from lstm import LSTMModel
 
+# yFinance History Window
+START = "2015-01-01"
+END = "2025-01-01"
 TICKER = "AAPL"
+
+# Model + Training Hyperparameters
 HIDDEN = 64
 SEQ_LEN = 30
 HORIZON = 5
@@ -17,12 +22,12 @@ EPOCHS = 100
 LR = 1e-3
 SPLIT = 0.8
 SEED = 42
-START = "2015-01-01"
-END = "2025-01-01"
+
 OUT_DIR = "outputs"
 
 
 def fetch_close_prices(ticker, start, end):
+    # Pull closing prices from yFinance
     df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
     if df.empty:
         raise RuntimeError(f"No data returned for {ticker} ({start} to {end}).")
@@ -30,23 +35,30 @@ def fetch_close_prices(ticker, start, end):
 
 
 def build_windows(scaled, seq_len, horizon, start_idx, end_idx):
-    inputs_batch = []
-    targets_batch = []
+    # Build training windows
+    xs = []
+    ys = []
     last_i = end_idx - seq_len - horizon
     for i in range(start_idx, last_i + 1):
-        seq_in = [scaled[i + t : i + t + 1].copy() for t in range(seq_len)]
-        tgt = scaled[i + seq_len : i + seq_len + horizon].copy()
-        inputs_batch.append(seq_in)
-        targets_batch.append(tgt)
-    return inputs_batch, targets_batch
+        window = [scaled[i + t : i + t + 1].copy() for t in range(seq_len)]
+        future = scaled[i + seq_len : i + seq_len + horizon].copy()
+        xs.append(window)
+        ys.append(future)
+    return xs, ys
 
 
-def inverse_matrix(scaler, arr):
+def unscale(scaler, arr):
+    # Bring predictions back to real dollar scale
+    # Flattens array into 2D array and then reshapes back to original shape
     flat = arr.reshape(-1, 1)
-    return scaler.inverse_transform(flat).reshape(arr.shape)
+    back = scaler.inverse_transform(flat)
+    return back.reshape(arr.shape)
 
 
 def rmse_mape(pred, actual):
+    # Calculate RMSE and MAPE
+    # RMSE is the square root of the mean of the squared differences between the predicted and actual values
+    # MAPE is the mean of the absolute percentage errors between the predicted and actual values
     diff = pred - actual
     rmse = float(np.sqrt(np.mean(diff**2)))
     denom = np.maximum(actual, 1e-8)
@@ -55,35 +67,46 @@ def rmse_mape(pred, actual):
 
 
 def evaluate(model, inputs_list, targets_list, scaler):
+    # Run inference on the model for each input sequence and target
     preds = []
     tgts = []
     for x_seq, y in zip(inputs_list, targets_list):
         y_hat, _ = model.forward(x_seq)
         preds.append(y_hat.copy())
         tgts.append(y.copy())
+
+    # Stack predictions and targets into 2D arrays
     pred_scaled = np.stack([p.reshape(-1) for p in preds], axis=0)
     tgt_scaled = np.stack([t.reshape(-1) for t in tgts], axis=0)
-    pred_inv = inverse_matrix(scaler, pred_scaled)
-    tgt_inv = inverse_matrix(scaler, tgt_scaled)
+
+    # Unscale predictions and targets back to original dollar scale
+    pred_inv = unscale(scaler, pred_scaled)
+    tgt_inv = unscale(scaler, tgt_scaled)
     return (*rmse_mape(pred_inv, tgt_inv), pred_inv, tgt_inv)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--exp_id", default="default")
-    ap.add_argument("--log", default="experiment_log.csv")
-    ap.add_argument("--ticker", default=None, help="override TICKER in this file")
-    args = ap.parse_args()
+
+    # Parsing and validating command line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_id", default="default")
+    parser.add_argument("--log", default="experiment_log.csv")
+    parser.add_argument("--ticker", default=None, help="override TICKER in this file")
+    args = parser.parse_args()
 
     ticker = args.ticker or TICKER
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    # Data preparation
     close = fetch_close_prices(ticker, START, END)
     n = len(close)
+
+    # Fit scaler to closing prices
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(close)
 
+    # Split data into training and test sets
     train_end = int(n * SPLIT)
     train_inputs, train_targets = build_windows(scaled, SEQ_LEN, HORIZON, 0, train_end)
     test_inputs, test_targets = build_windows(scaled, SEQ_LEN, HORIZON, train_end, n)
@@ -93,6 +116,7 @@ def main():
     if not test_inputs:
         raise RuntimeError("No test windows.")
 
+    # Initialize LSTM model
     model = LSTMModel(1, HIDDEN, HORIZON, seed=SEED)
     train_indices = np.arange(len(train_inputs))
 
@@ -102,38 +126,55 @@ def main():
     last_test_rmse = 0.0
     last_test_mape = 0.0
 
+    # Training loop
     for epoch in range(1, EPOCHS + 1):
-        np.random.default_rng(SEED + epoch).shuffle(train_indices)
+        # Shuffle training indices
+        rng = np.random.default_rng(SEED + epoch)
+        rng.shuffle(train_indices)
         losses = []
         for idx in train_indices:
             x_seq = train_inputs[idx]
             y = train_targets[idx]
+
+            # Forward pass through LSTM model
             pred, caches = model.forward(x_seq)
+
+            # Backward pass through LSTM model
             losses.append(model.backward(pred, y, caches))
+
+            # Apply updates to LSTM model
             model.apply_updates(LR)
 
         last_train_loss = float(np.mean(losses))
+
+        # Evaluate model on test set every epoch
         test_rmse, test_mape, pred_inv, tgt_inv = evaluate(model, test_inputs, test_targets, scaler)
         last_test_rmse = test_rmse
         last_test_mape = test_mape
+
+        # Update best model if test RMSE is lower
         if test_rmse < best_rmse:
             best_rmse = test_rmse
             best_epoch = epoch
 
+        # Keep track of last predictions and targets
         last_pred_inv = pred_inv.copy()
         last_tgt_inv = tgt_inv.copy()
 
+        # Print progress every 10 epochs or at the end of training
         if epoch == 1 or epoch % 10 == 0 or epoch == EPOCHS:
             print(
                 f"epoch {epoch}/{EPOCHS}  train_loss={last_train_loss:.6f}  "
                 f"test_rmse={test_rmse:.6f}  test_mape={test_mape:.4f}%"
             )
 
+    # Save predictions and targets
     pred_path = os.path.join(OUT_DIR, f"{args.exp_id}_predictions.npy")
     tgt_path = os.path.join(OUT_DIR, f"{args.exp_id}_targets.npy")
     np.save(pred_path, last_pred_inv)
     np.save(tgt_path, last_tgt_inv)
 
+    # Save metadata about the model
     meta_path = os.path.join(OUT_DIR, f"{args.exp_id}_meta.npz")
     np.savez(
         meta_path,
@@ -143,6 +184,8 @@ def main():
         best_test_rmse=best_rmse,
     )
 
+    # Save log of training run
+    # Appends one row per run to the CSV
     row = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "exp_id": args.exp_id,
@@ -168,7 +211,7 @@ def main():
     with open(log_path, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(row.keys()))
         if new_file:
-            w.writeheader()
+            w.writeheader() # Write header if new file
         w.writerow(row)
 
     print(f"Saved predictions to {pred_path} and log to {log_path}")
